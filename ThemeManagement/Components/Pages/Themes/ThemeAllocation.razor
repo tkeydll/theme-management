@@ -3,6 +3,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize]
 @inject IThemeService ThemeService
 @inject IAllocationService AllocationService
+@inject IMonthlyClosureService MonthlyClosureService
 @inject IEngineerService EngineerService
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
@@ -39,10 +40,18 @@ else
         </MudStack>
     </MudPaper>
 
+    @if (_isMonthClosed)
+    {
+        <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-3">
+            <MudIcon Icon="@Icons.Material.Filled.Lock" Size="Size.Small" Class="mr-1" />
+            @_year/@_month.ToString("D2") は締め済みのため、実績を変更できません。
+        </MudAlert>
+    }
+
     <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add"
-               OnClick="OpenAddDialog" Class="mb-3" Disabled="_theme.IsLocked">エンジニア追加</MudButton>
+               OnClick="OpenAddDialog" Class="mb-3" Disabled="_theme.IsLocked || _isMonthClosed">エンジニア追加</MudButton>
     <MudButton Variant="Variant.Outlined" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.ContentCopy"
-               OnClick="CopyFromPrevMonthAsync" Class="mb-3 ml-2" Disabled="_theme.IsLocked">前月割当をコピー</MudButton>
+               OnClick="CopyFromPrevMonthAsync" Class="mb-3 ml-2" Disabled="_theme.IsLocked || _isMonthClosed">前月割当をコピー</MudButton>
     @if (_theme.IsLocked)
     {
         <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-3">
@@ -73,9 +82,9 @@ else
             <AuthorizeView Roles="Admin" Context="authCtx">
                 <Authorized>
                     <MudTd>
-                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => OpenEditDialog(context)" Disabled="_theme!.IsLocked" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => OpenEditDialog(context)" Disabled="_theme!.IsLocked || _isMonthClosed" />
                         <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
-                                       OnClick="() => DeleteAsync(context)" Disabled="_theme!.IsLocked" />
+                                       OnClick="() => DeleteAsync(context)" Disabled="_theme!.IsLocked || _isMonthClosed" />
                     </MudTd>
                 </Authorized>
             </AuthorizeView>
@@ -94,6 +103,7 @@ else
     private decimal _totalCost;
     private decimal _progressRate;
     private decimal _remainingAmount;
+    private bool _isMonthClosed;
 
     protected override async Task OnInitializedAsync()
     {
@@ -105,6 +115,7 @@ else
     {
         _allocations = await AllocationService.GetByThemeAsync(ThemeId, _year, _month);
         _totalCost = AllocationService.GetTotalAllocatedCostByTheme(ThemeId);
+        _isMonthClosed = await MonthlyClosureService.IsClosedAsync(_year, _month);
         if (_theme != null)
         {
             _progressRate = _theme.OrderAmount > 0 ? _totalCost / _theme.OrderAmount * 100 : 0;

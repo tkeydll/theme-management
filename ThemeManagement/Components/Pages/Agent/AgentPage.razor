@@ -3,6 +3,7 @@
 @attribute [Microsoft.AspNetCore.Authorization.Authorize]
 @using ThemeManagement.Services
 @inject ICopilotAgentService AgentService
+@inject ICopilotAgentSettings AgentSettings
 @inject ISnackbar Snackbar
 @inject IJSRuntime JS
 @inject ILogger<AgentPage> Logger
@@ -17,16 +18,20 @@
     <!-- エラー時はタイトルを表示 -->
     <MudText Typo="Typo.h5" Class="mb-2">
         <MudIcon Icon="@Icons.Material.Filled.SmartToy" Class="mr-2" />
-        稼働予測エージェント（GitHub Copilot）
+        稼働予測エージェント（@ProviderName）
     </MudText>
     <MudAlert Severity="Severity.Error" Class="mb-4">
         <MudText Typo="Typo.body1"><strong>エージェントの起動に失敗しました</strong></MudText>
         <MudText Typo="Typo.body2" Class="mt-1">@_initError</MudText>
         <MudText Typo="Typo.caption" Class="mt-2">
-            GitHub Copilot CLI（gh copilot）が利用できるよう、以下を確認してください。
-            拡張機能のインストール: <code>gh extension install github/gh-copilot</code>
-            / GitHub CLI へのログイン: <code>gh auth login</code>
-            / 利用中の GitHub アカウントに有効な Copilot サブスクリプションがあること
+            @if (AgentSettings.Provider == "CopilotSdk")
+            {
+                <text>GitHub Copilot CLI で認証できるよう、<code>gh auth login</code> と Copilot 利用権限を確認してください。</text>
+            }
+            else
+            {
+                <text>Azure OpenAI に接続できるよう、Azure CLI へのログイン（<code>az login</code>）と正しいサブスクリプションの選択を確認してください。</text>
+            }
         </MudText>
     </MudAlert>
 }
@@ -37,7 +42,7 @@ else
         <div style="padding: 10px 16px 8px; border-bottom: 1px solid var(--mud-palette-lines-default); flex-shrink: 0;">
             <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
                 <MudIcon Icon="@Icons.Material.Filled.SmartToy" Color="Color.Primary" />
-                <MudText Typo="Typo.h6">稼働予測エージェント（GitHub Copilot）</MudText>
+                <MudText Typo="Typo.h6">稼働予測エージェント（@ProviderName）</MudText>
             </MudStack>
             <MudText Typo="Typo.caption" Color="Color.Secondary">
                 「○○テーマに来月エンジニアをアサインして」「メンバーの来月以降の稼働予測を教えて」などと話しかけてみてください。
@@ -190,6 +195,7 @@ else
     private CancellationTokenSource? _cts;
     private DotNetObjectReference<AgentPage>? _dotNetRef;
     private readonly string _handlerId = Guid.NewGuid().ToString("N");
+    private string ProviderName => AgentSettings.Provider == "CopilotSdk" ? "GitHub Copilot SDK" : "Azure OpenAI";
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -213,7 +219,9 @@ else
             var available = await AgentService.IsAvailableAsync();
             if (!available)
             {
-                _initError = "GitHub Copilot CLI に接続できませんでした。";
+                _initError = AgentSettings.Provider == "CopilotSdk"
+                    ? "GitHub Copilot SDK を起動できませんでした。Copilot CLI の認証状態を確認してください。"
+                    : "Azure OpenAI に接続できませんでした。az login で認証されているか確認してください。";
             }
         }
         catch (Exception ex)

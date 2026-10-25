@@ -7,6 +7,7 @@
 @inject IAllocationService AllocationService
 @inject IEngineerService EngineerService
 @inject IThemeService ThemeService
+@inject IMonthlyClosureService MonthlyClosureService
 @inject ISnackbar Snackbar
 @inject IWorkDayService WorkDayService
 @inject ICapacitySettings CapacitySettings
@@ -20,8 +21,8 @@
 <MudPaper Class="pa-3 mb-4 no-print" Elevation="1">
     <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3">
         <MudNumericField T="int" @bind-Value="_fiscalYear" Label="年度" Min="2020" Max="2099"
-                         Style="width:100px" Immediate="true" />
-        <MudSelect T="bool" @bind-Value="_isFirstHalf" Label="期" Style="width:110px">
+                         @bind-Value:after="LoadData" Style="width:100px" Immediate="true" />
+        <MudSelect T="bool" @bind-Value="_isFirstHalf" @bind-Value:after="LoadData" Label="期" Style="width:110px">
             <MudSelectItem T="bool" Value="true">上期 (4〜9月)</MudSelectItem>
             <MudSelectItem T="bool" Value="false">下期 (10〜3月)</MudSelectItem>
         </MudSelect>
@@ -88,9 +89,9 @@
                                 <tr class="@(isLastTheme ? "row-eng-last" : "")">
                                     @if (isFirstTheme)
                                     {
-                                        <td rowspan="@engThemes.Count" class="cell-group-name">@eng.Name</td>
+                                        <td rowspan="@engThemes.Count" class="cell-group-name"><a href="/engineers/@eng.Id/allocation">@eng.Name</a></td>
                                     }
-                                    <td class="cell-sub-name">@theme.Name</td>
+                                    <td class="cell-sub-name" title="@theme.Name"><a href="/themes/@theme.Id/allocation">@theme.Name</a> @if(IsInactiveTheme(theme)){<span class="status-badge-inactive">@GetStatusLabel(theme.Status)</span>}</td>
                                     @foreach (var (y, m) in _periodMonths)
                                     {
                                         var cy = y; var cm = m;
@@ -100,7 +101,7 @@
                                         <td class="cell-input @cellCss">
                                             <input type="number" class="alloc-input" min="0" step="5"
                                                    value="@((int)GetAlloc(engId, themeId, cy, cm))"
-                                                   disabled="@theme.IsLocked"
+                                                   disabled="@(theme.IsLocked || IsMonthClosed(cy, cm))"
                                                    @onchange="@(async e => await OnAllocChanged(engId, themeId, cy, cm, e.Value?.ToString()))" />
                                         </td>
                                     }
@@ -148,6 +149,21 @@
                     <MudIcon Icon="@Icons.Material.Filled.Topic" Class="mr-1" />
                     テーマビュー
                 </MudText>
+                <MudSelect T="string" MultiSelection="true" SelectedValues="_selectedOrderStatuses"
+                           SelectedValuesChanged="OnOrderStatusFilterChanged"
+                           Label="受注状態" Placeholder="すべて" Style="width:180px"
+                           Dense="true" Clearable="true">
+                    @foreach (var (value, label) in _orderStatusOptions)
+                    {
+                        <MudSelectItem T="string" Value="@value">@label</MudSelectItem>
+                    }
+                </MudSelect>
+                <MudSelect T="string" @bind-Value="_lockStateFilter" Label="締め状態" Style="width:170px"
+                           Dense="true">
+                    <MudSelectItem T="string" Value="@("All")">すべて</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Locked")">締め済みのみ</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Unlocked")">未締めのみ</MudSelectItem>
+                </MudSelect>
                 <MudSelect T="string" MultiSelection="true" SelectedValues="_selectedTags"
                            SelectedValuesChanged="OnTagFilterChanged"
                            Label="タグで絞り込み" Placeholder="すべて" Style="width:200px"
@@ -171,7 +187,7 @@
                             <th class="col-total">合計</th>
                         </tr>
                     </thead>
-                    @foreach (var theme in SortedThemes)
+                    @foreach (var theme in ThemeViewThemes)
                     {
                         var themeEngineers = _engineers.ToList();
                         var currentThemeId = theme.Id;
@@ -179,11 +195,11 @@
                         var carryOver2 = GetCarryOver(theme.Id);
                         var totalCost2 = periodCost2 + carryOver2;
                         var isOverBudget2 = theme.OrderAmount > 0 && totalCost2 > theme.OrderAmount;
-                        <tbody class="theme-group">
+                        <tbody class="theme-group @(IsInactiveTheme(theme) ? "theme-inactive" : "")">
                             <!-- 合計（目標）行 -->
                             <tr class="row-theme-target">
                                 <td rowspan="@(themeEngineers.Count + 1)" class="cell-group-name">
-                                    <div>@theme.Name</div>
+                                    <div><a href="/themes/@theme.Id/allocation">@theme.Name</a> @if(IsInactiveTheme(theme)){<span class="status-badge-inactive">@GetStatusLabel(theme.Status)</span>}</div>
                                     <div class="theme-meta">
                                         <span class="amount">¥@(theme.OrderAmount.ToString("N0"))</span><br />
                                         <span>〆@(theme.EstimatedCompletionDate.ToString("yyyy/M"))</span>
@@ -232,7 +248,7 @@
                                 var engId = eng.Id;
                                 var themeId = theme.Id;
                                 <tr class="@(isLastEng ? "row-eng-last" : "")">
-                                    <td class="cell-sub-name">@eng.Name</td>
+                                    <td class="cell-sub-name"><a href="/engineers/@eng.Id/allocation">@eng.Name</a></td>
                                     @foreach (var (y, m) in _periodMonths)
                                     {
                                         var cy = y; var cm = m;
@@ -242,7 +258,7 @@
                                         <td class="cell-input @cellCss">
                                             <input type="number" class="alloc-input" min="0" step="5"
                                                    value="@((int)GetAlloc(engId, themeId, cy, cm))"
-                                                   disabled="@theme.IsLocked"
+                                                   disabled="@(theme.IsLocked || IsMonthClosed(cy, cm))"
                                                    @onchange="@(async e => await OnAllocChanged(engId, themeId, cy, cm, e.Value?.ToString()))" />
                                         </td>
                                     }
@@ -304,10 +320,27 @@
     private string _sortKey = "OrderDate";
     private bool _sortAscending = false;
     private HashSet<string> _selectedTags = new();
+    private HashSet<string> _selectedOrderStatuses = new();
+    private string _lockStateFilter = "All";
+    private readonly List<(string Value, string Label)> _orderStatusOptions =
+    [
+        (ThemeStatus.Quoting, "見積中"),
+        (ThemeStatus.Confirmed, "受注確定"),
+        (ThemeStatus.Active, "進行中"),
+        (ThemeStatus.OnHold, "一時停止"),
+        (ThemeStatus.Completed, "完了"),
+        (ThemeStatus.Lost, "失注"),
+        (ThemeStatus.Cancelled, "中止")
+    ];
 
     private void OnTagFilterChanged(IEnumerable<string> values)
     {
         _selectedTags = values.ToHashSet();
+    }
+
+    private void OnOrderStatusFilterChanged(IEnumerable<string> values)
+    {
+        _selectedOrderStatuses = values.ToHashSet();
     }
 
     private IEnumerable<string> AllTags =>
@@ -338,6 +371,16 @@
         }
     }
 
+    private IEnumerable<Theme> ThemeViewThemes =>
+        SortedThemes.Where(theme =>
+            (_selectedOrderStatuses.Count == 0 || _selectedOrderStatuses.Contains(theme.Status))
+            && (_lockStateFilter switch
+            {
+                "Locked" => theme.IsLocked,
+                "Unlocked" => !theme.IsLocked,
+                _ => true
+            }));
+
     // Key: (EngineerId, ThemeId, Year, Month)
     private Dictionary<(int, int, int, int), decimal> _allocMap = new();
 
@@ -348,6 +391,9 @@
 
     // Key: (ThemeId, Year, Month) -> 月別合計目標稼働時間
     private Dictionary<(int, int, int), decimal> _targetMap = new();
+
+    // Key: (Year, Month) -> 締め済みか
+    private HashSet<(int, int)> _closedMonths = new();
 
     // Key: ThemeId -> 前期繰越工数
     private Dictionary<int, decimal> _carryOverMap = new();
@@ -377,7 +423,8 @@
         {
             ComputePeriodMonths();
             _engineers = await EngineerService.GetAllAsync();
-            _themes = await ThemeService.GetAllAsync(activeOnly: true);
+            _themes = await ThemeService.GetAllAsync(activeOnly: false);
+            _closedMonths = await MonthlyClosureService.GetClosedMonthsAsync(_periodMonths);
             _allocMap.Clear();
 
             // 下期は年度をまたぐので年ごとにグループ化して取得
@@ -444,8 +491,17 @@
     private decimal GetAlloc(int engId, int themeId, int year, int month)
         => _allocMap.TryGetValue((engId, themeId, year, month), out var v) ? v : 0;
 
+    private bool IsMonthClosed(int year, int month)
+        => _closedMonths.Contains((year, month));
+
     private async Task OnAllocChanged(int engId, int themeId, int year, int month, string? valueStr)
     {
+        if (IsMonthClosed(year, month))
+        {
+            Snackbar.Add($"{year}/{month:D2} は締め済みのため変更できません", Severity.Warning);
+            return;
+        }
+
         if (!decimal.TryParse(valueStr, System.Globalization.NumberStyles.Any,
                 System.Globalization.CultureInfo.InvariantCulture, out var value) || value < 0)
             value = 0;
@@ -571,8 +627,15 @@
     /// <summary>目標時間をエンジニアへ稼働上限比で自動割り当て</summary>
     private async Task AutoAssignAsync(int themeId)
     {
+        int skippedClosed = 0;
         foreach (var (y, m) in _periodMonths)
         {
+            if (IsMonthClosed(y, m))
+            {
+                skippedClosed++;
+                continue;
+            }
+
             var target = GetTarget(themeId, y, m);
             if (target <= 0) continue;
 
@@ -600,7 +663,10 @@
                 }
             }
         }
-        Snackbar.Add("自動割り当てを完了しました。", Severity.Success);
+        if (skippedClosed > 0)
+            Snackbar.Add($"締め済み {skippedClosed} ヶ月を除いて自動割り当てを完了しました。", Severity.Info);
+        else
+            Snackbar.Add("自動割り当てを完了しました。", Severity.Success);
         StateHasChanged();
     }
 
@@ -665,4 +731,17 @@
         }
         return cost;
     }
+
+    /// <summary>中止・完了・失注などの非アクティブテーマか</summary>
+    private static bool IsInactiveTheme(Theme theme)
+        => !ThemeStatus.ActiveStatuses.Contains(theme.Status);
+
+    /// <summary>ステータスの日本語ラベルを返す</summary>
+    private static string GetStatusLabel(string status) => status switch
+    {
+        ThemeStatus.Completed => "完了",
+        ThemeStatus.Cancelled => "中止",
+        ThemeStatus.Lost      => "失注",
+        _                     => status,
+    };
 }

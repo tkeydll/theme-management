@@ -1,3 +1,4 @@
 {
-  "Model": "claude-sonnet-4.6"
+  "Provider": "CopilotSdk",
+  "Model": "gpt-6-luna"
 }

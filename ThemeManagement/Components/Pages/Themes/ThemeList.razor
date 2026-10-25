@@ -1,7 +1,10 @@
 @page "/themes"
 @rendermode InteractiveServer
 @attribute [Microsoft.AspNetCore.Authorization.Authorize]
+@using Microsoft.EntityFrameworkCore
+@using ThemeManagement.Data
 @inject IThemeService ThemeService
+@inject AppDbContext Db
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject IJSRuntime JS
@@ -48,6 +51,8 @@
         <MudTh>受注日</MudTh>
         <MudTh>完了予定日</MudTh>
         <MudTh Style="text-align:right">受注金額(円)</MudTh>
+        <MudTh Style="text-align:right">売価金額(円)</MudTh>
+        <MudTh Style="text-align:right">原価金額(円)</MudTh>
         <MudTh>状態</MudTh>
         <MudTh>タグ</MudTh>
         <MudTh>操作</MudTh>
@@ -59,6 +64,8 @@
         <MudTd>@context.OrderDate.ToString("yyyy/MM/dd")</MudTd>
         <MudTd>@context.EstimatedCompletionDate.ToString("yyyy/MM/dd")</MudTd>
         <MudTd Style="text-align:right">@context.OrderAmount.ToString("N0")</MudTd>
+        <MudTd Style="text-align:right">@GetActualSaleAmount(context.Id).ToString("N0")</MudTd>
+        <MudTd Style="text-align:right">@GetActualCostAmount(context.Id).ToString("N0")</MudTd>
         <MudTd>
             <MudChip T="string" Size="Size.Small" Color="@StatusColor(context.Status)">
                 @StatusLabel(context.Status)
@@ -73,6 +80,8 @@
         </MudTd>
         <MudTd>
             <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => OpenEditDialog(context)" />
+            <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" Color="Color.Default"
+                           Title="コピーして新規登録" OnClick="() => OpenCopyDialog(context)" />
             <MudIconButton Icon="@Icons.Material.Filled.BarChart" Size="Size.Small" Color="Color.Info"
                            Href="@($"/themes/{context.Id}/allocation")" />
             <MudIconButton Icon="@Icons.Material.Filled.Psychology" Size="Size.Small" Color="Color.Secondary"
@@ -95,6 +104,7 @@
     private bool _showAll = false;
     private string? _filterTag = null;
     private List<string> _allTags = [];
+    private Dictionary<int, (decimal Sale, decimal Cost)> _actualAmounts = [];
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
@@ -106,9 +116,33 @@
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order()
             .ToList();
+        var themeIds = _themes.Select(t => t.Id).ToList();
+        var allocations = await Db.EngineerThemeAllocations.AsNoTracking()
+            .Where(a => themeIds.Contains(a.ThemeId))
+            .Select(a => new
+            {
+                a.ThemeId,
+                a.AllocatedHours,
+                a.Engineer.Grade.UnitSalePrice,
+                a.Engineer.Grade.UnitCostPrice
+            })
+            .ToListAsync();
+        _actualAmounts = allocations
+            .GroupBy(a => a.ThemeId)
+            .ToDictionary(
+                group => group.Key,
+                group => (
+                    Sale: group.Sum(a => a.AllocatedHours * a.UnitSalePrice),
+                    Cost: group.Sum(a => a.AllocatedHours * a.UnitCostPrice)));
         if (_filterTag != null && !_allTags.Contains(_filterTag, StringComparer.OrdinalIgnoreCase))
             _filterTag = null;
     }
+
+    private decimal GetActualSaleAmount(int themeId) =>
+        _actualAmounts.TryGetValue(themeId, out var amounts) ? amounts.Sale : 0m;
+
+    private decimal GetActualCostAmount(int themeId) =>
+        _actualAmounts.TryGetValue(themeId, out var amounts) ? amounts.Cost : 0m;
 
     private bool FilterFunc(Theme t) =>
         _filterTag == null || t.GetTagList().Contains(_filterTag, StringComparer.OrdinalIgnoreCase);
@@ -147,6 +181,27 @@
         };
         var parameters = new DialogParameters<ThemeEditDialog> { { x => x.Theme, copy } };
         var dialog = await DialogService.ShowAsync<ThemeEditDialog>("テーマ編集", parameters);
+        var result = await dialog.Result;
+        if (result is { Canceled: false }) await LoadAsync();
+    }
+
+    private async Task OpenCopyDialog(Theme theme)
+    {
+        var copy = new Theme
+        {
+            Id = 0,
+            ThemeNo = string.Empty,
+            Name = theme.Name + " のコピー",
+            OrderType = theme.OrderType,
+            OrderDate = DateOnly.FromDateTime(DateTime.Today),
+            EstimatedCompletionDate = theme.EstimatedCompletionDate,
+            ActualCompletionDate = null,
+            OrderAmount = theme.OrderAmount,
+            Status = ThemeStatus.Active,
+            Tags = theme.Tags
+        };
+        var parameters = new DialogParameters<ThemeEditDialog> { { x => x.Theme, copy } };
+        var dialog = await DialogService.ShowAsync<ThemeEditDialog>("テーマ登録（コピー）", parameters);
         var result = await dialog.Result;
         if (result is { Canceled: false }) await LoadAsync();
     }
@@ -210,6 +265,8 @@
             CsvField("受注日"),
             CsvField("完了予定日"),
             CsvField("受注金額"),
+            CsvField("売価金額"),
+            CsvField("原価金額"),
             CsvField("状態")));
         foreach (var t in _themes)
         {
@@ -220,6 +277,8 @@
                 CsvField($"{t.OrderDate:yyyy/MM/dd}"),
                 CsvField($"{t.EstimatedCompletionDate:yyyy/MM/dd}"),
                 CsvField($"{t.OrderAmount}"),
+                CsvField($"{GetActualSaleAmount(t.Id)}"),
+                CsvField($"{GetActualCostAmount(t.Id)}"),
                 CsvField(StatusLabel(t.Status))));
         }
         var filename = $"themes_{DateTime.Now:yyyyMMdd_HHmmss}.csv";

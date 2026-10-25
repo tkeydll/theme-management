@@ -1,5 +1,10 @@
 using System.ComponentModel;
-using GitHub.Copilot.SDK;
+using System.Runtime.CompilerServices;
+using System.Text;
+using Azure.AI.OpenAI;
+using Azure.Core;
+using Azure.Identity;
+using GitHub.Copilot;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using ThemeManagement.Data;
@@ -8,7 +13,7 @@ using ThemeManagement.Domain.Entities;
 namespace ThemeManagement.Services;
 
 /// <summary>
-/// GitHub Copilot SDK を使って、テーマへのエンジニア最適アサインを支援するエージェントサービス。
+/// Azure OpenAI または GitHub Copilot SDK でテーマへのエンジニアアサインを支援します。
 /// </summary>
 public interface ICopilotAgentService
 {
@@ -22,11 +27,27 @@ public class CopilotAgentService : ICopilotAgentService, IAsyncDisposable
     private readonly ICapacitySettings _capacitySettings;
     private readonly ICopilotAgentSettings _agentSettings;
     private readonly ILogger<CopilotAgentService> _logger;
-    private CopilotClient? _client;
-    private bool _started;
-    private readonly SemaphoreSlim _lock = new(1, 1);
 
-    private static readonly string SystemPrompt = """
+    internal const string AzureEndpointVariable = "AZURE_OPENAI_ENDPOINT";
+    internal const string TokenScopeVariable = "AZURE_OPENAI_TOKEN_SCOPE";
+
+    internal static string AzureEndpoint => GetRequiredEnvironmentVariable(AzureEndpointVariable);
+    internal static string TokenScope => GetRequiredEnvironmentVariable(TokenScopeVariable);
+
+    private static string GetRequiredEnvironmentVariable(string name)
+    {
+        var value = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(value))
+            throw new InvalidOperationException($"環境変数 {name} が設定されていません");
+        return value;
+    }
+
+    private string SystemPrompt =>
+        string.IsNullOrWhiteSpace(_agentSettings.CustomSystemPrompt)
+            ? DefaultSystemPrompt
+            : _agentSettings.CustomSystemPrompt;
+
+    public static string DefaultSystemPrompt => $"""
         あなたは「テーマ稼働予測システム」のアシスタントです。
         このシステムは「どのテーマ（案件）に誰をどれだけ投入すれば、予定通りに終わるか」「エンジニアの稼働が多すぎたり少なすぎたりしないか」を把握するためのものです。
 
@@ -58,7 +79,6 @@ public class CopilotAgentService : ICopilotAgentService, IAsyncDisposable
         ユーザーがアサインを依頼したら、最適なエンジニアを提案し、確認後に assign_engineer_to_theme を実行してください。
         """;
 
-
     public CopilotAgentService(
         IServiceScopeFactory scopeFactory,
         ICapacitySettings capacitySettings,
@@ -75,74 +95,73 @@ public class CopilotAgentService : ICopilotAgentService, IAsyncDisposable
     {
         try
         {
-            await EnsureStartedAsync();
-            var response = await _client!.PingAsync();
-            return response != null;
+            if (_agentSettings.Provider == "CopilotSdk")
+            {
+                await using var client = new CopilotClient();
+                await client.StartAsync();
+                await client.ListModelsAsync();
+                return true;
+            }
+
+            if (_agentSettings.Provider != "AzureOpenAI")
+                throw new InvalidOperationException($"未対応のエージェントプロバイダーです: {_agentSettings.Provider}");
+
+            var credential = new AzureApiCredential();
+            await credential.GetTokenAsync(new TokenRequestContext([TokenScope]), default);
+            return true;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Copilot SDK is not available");
+            _logger.LogWarning(ex, "エージェントプロバイダー {Provider} の利用可能性確認に失敗しました", _agentSettings.Provider);
             return false;
         }
     }
 
     public async Task<CopilotAgentSession> CreateSessionAsync(CancellationToken cancellationToken = default)
     {
-        await EnsureStartedAsync(cancellationToken);
-
         var tools = BuildTools();
-
-        _logger.LogInformation("Copilot セッション作成: model={Model}", _agentSettings.Model);
-        var session = await _client!.CreateSessionAsync(new SessionConfig
+        if (_agentSettings.Provider == "CopilotSdk")
         {
-            Model = _agentSettings.Model,
-            Streaming = true,
-            SystemMessage = new SystemMessageConfig
+            var client = new CopilotClient();
+            try
             {
-                Mode = SystemMessageMode.Append,
-                Content = SystemPrompt,
-            },
-            Tools = tools,
-            OnPermissionRequest = PermissionHandler.ApproveAll,
-        }, cancellationToken);
+                await client.StartAsync();
+                var session = await client.CreateSessionAsync(new SessionConfig
+                {
+                    Model = _agentSettings.Model,
+                    SystemMessage = new SystemMessageConfig { Content = SystemPrompt },
+                    OnPermissionRequest = PermissionHandler.ApproveAll,
+                    Tools = tools,
+                    AvailableTools = tools.Select(tool => $"custom:{tool.Name}").ToList(),
+                });
+                _logger.LogInformation("GitHub Copilot SDK セッション作成: model={Model}", _agentSettings.Model);
+                return new CopilotAgentSession(client, session, _logger);
+            }
+            catch
+            {
+                await client.DisposeAsync();
+                throw;
+            }
+        }
 
-        return new CopilotAgentSession(session, _logger);
+        if (_agentSettings.Provider != "AzureOpenAI")
+            throw new InvalidOperationException($"未対応のエージェントプロバイダーです: {_agentSettings.Provider}");
+
+        var credential = new AzureApiCredential();
+        var azureClient = new AzureOpenAIClient(new Uri(AzureEndpoint), credential);
+        var chatClient = azureClient
+            .GetChatClient(_agentSettings.Model)
+            .AsIChatClient()
+            .AsBuilder()
+            .UseFunctionInvocation()
+            .Build();
+
+        _logger.LogInformation("Azure OpenAI セッション作成: model={Model}", _agentSettings.Model);
+        return new CopilotAgentSession(chatClient, tools, SystemPrompt, _logger);
     }
 
-    private async Task EnsureStartedAsync(CancellationToken cancellationToken = default)
-    {
-        if (_started && _client != null) return;
-
-        await _lock.WaitAsync(cancellationToken);
-        try
-        {
-            if (_started && _client != null) return;
-
-            _client = new CopilotClient();
-            await _client.StartAsync(cancellationToken);
-            _started = true;
-        }
-        catch
-        {
-            _logger.LogError("Copilot クライアントの起動に失敗しました");
-            _client = null;
-            _started = false;
-            throw;
-        }
-        finally
-        {
-            _lock.Release();
-        }
-    }
-
-    private static AIFunctionFactoryOptions ReadOnlyTool(string name, string description) =>
-        new AIFunctionFactoryOptions
-        {
-            Name = name,
-            Description = description,
-            AdditionalProperties = new System.Collections.ObjectModel.ReadOnlyDictionary<string, object?>(
-                new Dictionary<string, object?> { ["skip_permission"] = true }),
-        };
+    private static AIFunctionFactoryOptions MakeTool(string name, string description) =>
+        new AIFunctionFactoryOptions { Name = name, Description = description };
 
     private AIFunction[] BuildTools()
     {
@@ -178,7 +197,7 @@ public class CopilotAgentService : ICopilotAgentService, IAsyncDisposable
                         }).ToList(),
                     }).ToList();
                 },
-                ReadOnlyTool("get_active_themes",
+                MakeTool("get_active_themes",
                     "アクティブなテーマ（案件）の一覧を取得します。テーマID、テーマ名、受注金額、必要スキルなどが含まれます。")),
 
             // ─── エンジニア一覧取得 ───
@@ -210,7 +229,7 @@ public class CopilotAgentService : ICopilotAgentService, IAsyncDisposable
                         }).ToList(),
                     }).ToList();
                 },
-                ReadOnlyTool("get_active_engineers",
+                MakeTool("get_active_engineers",
                     "アクティブなエンジニアの一覧を取得します。エンジニアID、名前、等級、販売単価(unitSalePrice)、原価単価(unitCostPrice)、スキル情報が含まれます。社用開発テーマのコスト計算にはunitCostPriceを使用してください。")),
 
             // ─── エンジニア稼働余力取得 ───
@@ -248,7 +267,7 @@ public class CopilotAgentService : ICopilotAgentService, IAsyncDisposable
                         workRate = maxHours > 0 ? Math.Round(allocatedHours / maxHours * 100, 1) : 0m,
                     };
                 },
-                ReadOnlyTool("get_engineer_availability",
+                MakeTool("get_engineer_availability",
                     "特定の年月における1名のエンジニアの稼働余力（最大稼働時間・割り当て済み時間・残余時間）を取得します。")),
 
             // ─── 全エンジニア稼働余力取得 ───
@@ -271,7 +290,6 @@ public class CopilotAgentService : ICopilotAgentService, IAsyncDisposable
 
                     var engineerIds = engineers.Select(e => e.Id).ToList();
 
-                    // Batch-load work days, adjustments, and allocations in 3 queries (no N+1)
                     var monthlyWorkDays = await db.MonthlyWorkDays
                         .AsNoTracking()
                         .FirstOrDefaultAsync(m => m.Year == year && m.Month == month);
@@ -313,7 +331,7 @@ public class CopilotAgentService : ICopilotAgentService, IAsyncDisposable
                         };
                     }).ToList();
                 },
-                ReadOnlyTool("get_all_engineers_availability",
+                MakeTool("get_all_engineers_availability",
                     "特定の年月における全アクティブエンジニアの稼働余力一覧を取得します。スキル情報や稼働率も含まれます。社用開発テーマにはunitCostPriceを使用してください。")),
 
             // ─── テーマの割り当て状況取得 ───
@@ -332,8 +350,6 @@ public class CopilotAgentService : ICopilotAgentService, IAsyncDisposable
 
                     bool useCostPrice = theme.OrderType == "社用開発";
 
-                    // Fetch all allocations for the theme (all months) to compute total cost
-                    // Only include rows where navigation properties are fully loaded (data integrity guard)
                     var allAllocations = (await db.EngineerThemeAllocations
                         .AsNoTracking()
                         .Include(a => a.Engineer).ThenInclude(e => e.Grade)
@@ -342,7 +358,6 @@ public class CopilotAgentService : ICopilotAgentService, IAsyncDisposable
                         .Where(a => a.Engineer?.Grade != null)
                         .ToList();
 
-                    // Fetch this month's allocations for the detail rows
                     var monthAllocations = allAllocations
                         .Where(a => a.Year == year && a.Month == month)
                         .ToList();
@@ -367,7 +382,7 @@ public class CopilotAgentService : ICopilotAgentService, IAsyncDisposable
                         }).ToList(),
                     };
                 },
-                ReadOnlyTool("get_theme_allocations",
+                MakeTool("get_theme_allocations",
                     "テーマの特定月における割り当て状況（割り当てエンジニア・時間・コスト・予算残高）を取得します。社用開発テーマは原価（unitCostPrice）でコストを計算します。")),
 
             // ─── エンジニアをテーマにアサイン ───
@@ -379,7 +394,6 @@ public class CopilotAgentService : ICopilotAgentService, IAsyncDisposable
                     [Description("月（1〜12）")] int month,
                     [Description("割り当て時間（時間単位、0より大きい値）")] decimal hours) =>
                 {
-                    // Validate inputs before any DB access
                     if (month < 1 || month > 12)
                         return new { success = false, message = $"月は 1〜12 の範囲で指定してください（指定値: {month}）" };
                     if (year < 2000 || year > 2100)
@@ -422,70 +436,98 @@ public class CopilotAgentService : ICopilotAgentService, IAsyncDisposable
         ];
     }
 
-    public async ValueTask DisposeAsync()
-    {
-        if (_client != null)
-        {
-            try { await _client.StopAsync(); } catch { /* ignore */ }
-            _client = null;
-        }
-        _lock.Dispose();
-    }
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
 /// <summary>
-/// エージェントセッションのラッパー。メッセージ送受信と履歴管理を提供します。
+/// Azure CLI 認証情報を使用して指定スコープのトークンを取得する TokenCredential。
+/// </summary>
+internal sealed class AzureApiCredential : TokenCredential
+{
+    private readonly AzureCliCredential _inner = new();
+
+    public override AccessToken GetToken(TokenRequestContext _, CancellationToken cancellationToken) =>
+        _inner.GetToken(new TokenRequestContext([CopilotAgentService.TokenScope]), cancellationToken);
+
+    public override ValueTask<AccessToken> GetTokenAsync(TokenRequestContext _, CancellationToken cancellationToken) =>
+        _inner.GetTokenAsync(new TokenRequestContext([CopilotAgentService.TokenScope]), cancellationToken);
+}
+
+/// <summary>
+/// エージェントセッション。選択したプロバイダーとの会話履歴を保持します。
 /// </summary>
 public class CopilotAgentSession : IAsyncDisposable
 {
-    private readonly CopilotSession _session;
+    private readonly IChatClient? _chatClient;
+    private readonly CopilotClient? _copilotClient;
+    private readonly CopilotSession? _copilotSession;
+    private readonly AIFunction[] _tools;
+    private readonly List<ChatMessage> _history;
     private readonly ILogger _logger;
 
-    public CopilotAgentSession(CopilotSession session, ILogger logger)
+    public string SessionId { get; } = Guid.NewGuid().ToString("N");
+
+    public CopilotAgentSession(IChatClient chatClient, AIFunction[] tools, string systemPrompt, ILogger logger)
     {
-        _session = session;
+        _chatClient = chatClient;
+        _tools = tools;
+        _history = [new ChatMessage(ChatRole.System, systemPrompt)];
         _logger = logger;
     }
 
-    public string SessionId => _session.SessionId;
+    public CopilotAgentSession(CopilotClient client, CopilotSession session, ILogger logger)
+    {
+        _copilotClient = client;
+        _copilotSession = session;
+        _tools = [];
+        _history = [];
+        _logger = logger;
+    }
 
     /// <summary>
     /// メッセージを送信し、ストリーミングで応答を受け取ります。
     /// </summary>
     public async IAsyncEnumerable<string> SendAsync(
         string prompt,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var channel = System.Threading.Channels.Channel.CreateUnbounded<string>();
-
-        IDisposable? subscription = null;
-        subscription = _session.On(evt =>
+        if (_copilotSession != null)
         {
-            switch (evt)
-            {
-                case AssistantMessageDeltaEvent delta when !string.IsNullOrEmpty(delta.Data.DeltaContent):
-                    channel.Writer.TryWrite(delta.Data.DeltaContent);
-                    break;
-                case SessionIdleEvent:
-                    channel.Writer.TryComplete();
-                    subscription?.Dispose();
-                    break;
-                case SessionErrorEvent err:
-                    _logger.LogError("Copilot セッションエラーイベント: {Message}", err.Data.Message);
-                    channel.Writer.TryComplete(new InvalidOperationException(err.Data.Message));
-                    subscription?.Dispose();
-                    break;
-            }
-        });
-
-        await _session.SendAsync(new MessageOptions { Prompt = prompt }, cancellationToken);
-
-        await foreach (var chunk in channel.Reader.ReadAllAsync(cancellationToken))
-        {
-            yield return chunk;
+            var response = await _copilotSession.SendAndWaitAsync(
+                new MessageOptions { Prompt = prompt },
+                timeout: TimeSpan.FromMinutes(5),
+                cancellationToken: cancellationToken);
+            var content = response?.Data?.Content;
+            if (!string.IsNullOrEmpty(content))
+                yield return content;
+            yield break;
         }
+
+        var chatClient = _chatClient
+            ?? throw new InvalidOperationException("チャットクライアントが初期化されていません");
+        _history.Add(new ChatMessage(ChatRole.User, prompt));
+        var options = new ChatOptions { Tools = [.._tools] };
+        var fullContent = new StringBuilder();
+
+        await foreach (var update in chatClient.GetStreamingResponseAsync(_history, options, cancellationToken))
+        {
+            if (update.Text is not null)
+            {
+                fullContent.Append(update.Text);
+                yield return update.Text;
+            }
+        }
+
+        if (fullContent.Length > 0)
+            _history.Add(new ChatMessage(ChatRole.Assistant, fullContent.ToString()));
     }
 
-    public ValueTask DisposeAsync() => _session.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        _chatClient?.Dispose();
+        if (_copilotSession != null)
+            await _copilotSession.DisposeAsync();
+        if (_copilotClient != null)
+            await _copilotClient.DisposeAsync();
+    }
 }
-

@@ -27,12 +27,24 @@ public class AllocationService : IAllocationService
     private readonly AppDbContext _db;
     private readonly ICapacitySettings _capacitySettings;
     private readonly INotificationService _notificationService;
+    private readonly IMonthlyClosureService _monthlyClosureService;
 
-    public AllocationService(AppDbContext db, ICapacitySettings capacitySettings, INotificationService notificationService)
+    public AllocationService(
+        AppDbContext db,
+        ICapacitySettings capacitySettings,
+        INotificationService notificationService,
+        IMonthlyClosureService monthlyClosureService)
     {
         _db = db;
         _capacitySettings = capacitySettings;
         _notificationService = notificationService;
+        _monthlyClosureService = monthlyClosureService;
+    }
+
+    private async Task EnsureMonthOpenAsync(int year, int month)
+    {
+        if (await _monthlyClosureService.IsClosedAsync(year, month))
+            throw new BusinessRuleException($"{year}/{month:D2} は締め済みのため、実績を変更できません");
     }
 
     public Task<List<AllocationRowDto>> GetByEngineerAsync(int engineerId, int year, int month) =>
@@ -94,6 +106,8 @@ public class AllocationService : IAllocationService
 
     public async Task UpsertAllocationAsync(int engineerId, int themeId, int year, int month, decimal hours)
     {
+        await EnsureMonthOpenAsync(year, month);
+
         if (hours <= 0)
             throw new BusinessRuleException("割り当て時間は0より大きい値を入力してください");
 
@@ -155,6 +169,8 @@ public class AllocationService : IAllocationService
         var allocation = await _db.EngineerThemeAllocations.FindAsync(id);
         if (allocation != null)
         {
+            await EnsureMonthOpenAsync(allocation.Year, allocation.Month);
+
             var theme = await _db.Themes.FindAsync(allocation.ThemeId);
             if (theme?.IsLocked == true)
                 throw new BusinessRuleException($"「{theme.Name}」はロックされているため、稼働予定を変更できません");
@@ -174,6 +190,8 @@ public class AllocationService : IAllocationService
 
     public async Task UpsertAllocationNoValidationAsync(int engineerId, int themeId, int year, int month, decimal hours)
     {
+        await EnsureMonthOpenAsync(year, month);
+
         var theme = await _db.Themes.FindAsync(themeId)
             ?? throw new BusinessRuleException("テーマが見つかりません");
         if (theme.IsLocked)
@@ -214,7 +232,16 @@ public class AllocationService : IAllocationService
     {
         int added = 0, updated = 0;
 
-        foreach (var row in rows)
+        var rowsList = rows.ToList();
+        var targetMonths = rowsList.Select(r => (r.Year, r.Month)).Distinct().ToList();
+        var closedMonths = await _monthlyClosureService.GetClosedMonthsAsync(targetMonths);
+        if (closedMonths.Count > 0)
+        {
+            var monthLabels = string.Join(", ", closedMonths.OrderBy(x => x.Year).ThenBy(x => x.Month).Select(x => $"{x.Year}/{x.Month:D2}"));
+            throw new BusinessRuleException($"締め済みの月が含まれているため取り込めません: {monthLabels}");
+        }
+
+        foreach (var row in rowsList)
         {
             var existing = await _db.EngineerThemeAllocations
                 .FirstOrDefaultAsync(a => a.EngineerId == row.EngineerId && a.ThemeId == row.ThemeId
@@ -244,6 +271,8 @@ public class AllocationService : IAllocationService
 
     public async Task<int> CopyFromPreviousMonthAsync(int themeId, int year, int month)
     {
+        await EnsureMonthOpenAsync(year, month);
+
         var theme = await _db.Themes.FindAsync(themeId);
         if (theme?.IsLocked == true)
             throw new BusinessRuleException($"「{theme.Name}」はロックされているため、稼働予定を変更できません");

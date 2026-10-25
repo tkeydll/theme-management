@@ -4,6 +4,7 @@
 @inject IEngineerService EngineerService
 @inject IAllocationService AllocationService
 @inject IThemeService ThemeService
+@inject IMonthlyClosureService MonthlyClosureService
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject NavigationManager Nav
@@ -38,10 +39,18 @@ else
         </MudStack>
     </MudPaper>
 
+    @if (_isMonthClosed)
+    {
+        <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-3">
+            <MudIcon Icon="@Icons.Material.Filled.Lock" Size="Size.Small" Class="mr-1" />
+            @_year/@_month.ToString("D2") は締め済みのため、実績を変更できません。
+        </MudAlert>
+    }
+
     <AuthorizeView Roles="Admin">
         <Authorized>
             <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add"
-                       OnClick="OpenAddDialog" Class="mb-3">テーマ追加</MudButton>
+                       OnClick="OpenAddDialog" Class="mb-3" Disabled="_isMonthClosed">テーマ追加</MudButton>
         </Authorized>
     </AuthorizeView>
 
@@ -63,9 +72,9 @@ else
             <AuthorizeView Roles="Admin" Context="authCtx">
                 <Authorized>
                     <MudTd>
-                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => OpenEditDialog(context)" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => OpenEditDialog(context)" Disabled="_isMonthClosed" />
                         <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
-                                       OnClick="() => DeleteAsync(context)" />
+                                       OnClick="() => DeleteAsync(context)" Disabled="_isMonthClosed" />
                     </MudTd>
                 </Authorized>
             </AuthorizeView>
@@ -84,6 +93,7 @@ else
     private decimal _maxHours;
     private decimal _totalHours;
     private decimal _remainingHours;
+    private bool _isMonthClosed;
 
     protected override async Task OnInitializedAsync()
     {
@@ -97,6 +107,7 @@ else
         _maxHours = AllocationService.GetMaxDevelopableHours(EngineerId, _year, _month);
         _totalHours = _allocations.Sum(a => a.AllocatedHours);
         _remainingHours = _maxHours - _totalHours;
+        _isMonthClosed = await MonthlyClosureService.IsClosedAsync(_year, _month);
     }
 
     private async Task OpenAddDialog()

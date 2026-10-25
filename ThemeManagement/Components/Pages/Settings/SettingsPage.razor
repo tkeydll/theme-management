@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @using ThemeManagement.Services
 @inject ICopilotAgentSettings AgentSettings
+@inject IMonthlyClosureService MonthlyClosureService
 @inject ISnackbar Snackbar
 
 <PageTitle>設定・管理</PageTitle>
@@ -37,9 +38,13 @@
                     <MudText Typo="Typo.h6">アサインエージェント</MudText>
                 </MudStack>
                 <MudText Typo="Typo.body2" Color="Color.Secondary">
-                    アサインエージェントで使用する AI モデルを選択します。<br />
+                    エージェントの実行方式と AI モデルを選択します。<br />
                     変更は次回セッション作成時から反映されます。
                 </MudText>
+                <MudSelect T="string" @bind-Value="_selectedProvider" Label="実行方式" Variant="Variant.Outlined">
+                    <MudSelectItem T="string" Value="@("AzureOpenAI")">Azure OpenAI</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("CopilotSdk")">GitHub Copilot SDK</MudSelectItem>
+                </MudSelect>
                 <MudSelect T="string" @bind-Value="_selectedModel" Label="使用モデル" Variant="Variant.Outlined">
                     @foreach (var model in AgentSettings.AvailableModels)
                     {
@@ -49,28 +54,135 @@
                 <MudTextField @bind-Value="_selectedModel" Label="カスタムモデル名（直接入力）"
                               Variant="Variant.Outlined"
                               HelperText="上のリストにない場合は直接入力してください" />
+                <MudTextField @bind-Value="_systemPrompt" Label="システムプロンプト"
+                              Variant="Variant.Outlined" Lines="12" AutoGrow="true" MaxLines="30"
+                              HelperText="空欄で保存すると標準のプロンプトを使用します" />
+                <MudButton Variant="Variant.Text" Color="Color.Default"
+                           StartIcon="@Icons.Material.Filled.RestartAlt"
+                           OnClick="ResetSystemPrompt">
+                    標準プロンプトを読み込む
+                </MudButton>
                 <MudButton Variant="Variant.Filled" Color="Color.Primary"
                            StartIcon="@Icons.Material.Filled.Save"
-                           OnClick="SaveModelAsync">
+                           OnClick="SaveAgentSettingsAsync">
                     保存
                 </MudButton>
             </MudStack>
         </MudPaper>
     </MudItem>
+
+    <MudItem xs="12" sm="6" md="4">
+        <AuthorizeView Roles="Admin">
+            <Authorized>
+                <MudPaper Class="pa-4" Elevation="2">
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                            <MudIcon Icon="@Icons.Material.Filled.LockClock" Color="Color.Primary" />
+                            <MudText Typo="Typo.h6">月次締め</MudText>
+                        </MudStack>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">
+                            締めた月は実績工数の追加・更新・削除ができなくなります。
+                        </MudText>
+
+                        <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                            <MudNumericField T="int"                             @bind-Value="_closureYear" @bind-Value:after="RefreshClosureStateAsync" Label="年" Min="2020" Max="2100" Style="width:100px" />
+                                                        <MudNumericField T="int" @bind-Value="_closureMonth" @bind-Value:after="RefreshClosureStateAsync" Label="月" Min="1" Max="12" Style="width:80px" />
+                            <MudButton Variant="Variant.Outlined" OnClick="RefreshClosureStateAsync">状態確認</MudButton>
+                        </MudStack>
+
+                        <MudAlert Severity="@(_isClosed ? Severity.Warning : Severity.Info)" Dense="true">
+                            @(_closureYear)/@(_closureMonth.ToString("D2")) は @(_isClosed ? "締め済み" : "未締め") です。
+                        </MudAlert>
+
+                        <MudButton Variant="Variant.Filled"
+                                   Color="@(_isClosed ? Color.Secondary : Color.Primary)"
+                                   StartIcon="@(_isClosed ? Icons.Material.Filled.LockOpen : Icons.Material.Filled.Lock)"
+                                   OnClick="ToggleMonthClosureAsync">
+                            @(_isClosed ? "締め解除" : "締める")
+                        </MudButton>
+
+                        @if (_closedMonths.Any())
+                        {
+                            <MudDivider Class="my-1" />
+                            <MudText Typo="Typo.subtitle2">締め済み月</MudText>
+                            <MudChipSet T="string">
+                                @foreach (var item in _closedMonths)
+                                {
+                                    <MudChip T="string" Color="Color.Warning" Variant="Variant.Outlined">@item.Year/@item.Month.ToString("D2")</MudChip>
+                                }
+                            </MudChipSet>
+                        }
+                    </MudStack>
+                </MudPaper>
+            </Authorized>
+        </AuthorizeView>
+    </MudItem>
 </MudGrid>
 
 @code {
+    private string _selectedProvider = "";
     private string _selectedModel = "";
+    private string _systemPrompt = "";
+    private int _closureYear = DateTime.Now.Year;
+    private int _closureMonth = DateTime.Now.Month;
+    private bool _isClosed;
+    private List<MonthlyClosure> _closedMonths = [];
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
+        _selectedProvider = AgentSettings.Provider;
         _selectedModel = AgentSettings.Model;
+        _systemPrompt = AgentSettings.CustomSystemPrompt ?? CopilotAgentService.DefaultSystemPrompt;
+        await RefreshClosureStateAsync();
+        await LoadClosedMonthsAsync();
     }
 
-    private void SaveModelAsync()
+    private void ResetSystemPrompt() => _systemPrompt = CopilotAgentService.DefaultSystemPrompt;
+
+    private void SaveAgentSettingsAsync()
     {
-        if (string.IsNullOrWhiteSpace(_selectedModel)) return;
-        AgentSettings.Model = _selectedModel.Trim();
-        Snackbar.Add($"モデルを「{AgentSettings.Model}」に変更しました", Severity.Success);
+        try
+        {
+            // 標準プロンプトと同一なら保存せず、標準に追従させる
+            var prompt = _systemPrompt.Trim() == CopilotAgentService.DefaultSystemPrompt.Trim() ? null : _systemPrompt;
+            AgentSettings.Update(_selectedProvider, _selectedModel, prompt);
+            Snackbar.Add($"実行方式を「{(_selectedProvider == "AzureOpenAI" ? "Azure OpenAI" : "GitHub Copilot SDK")}」、モデルを「{AgentSettings.Model}」に変更しました", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"エージェント設定の保存に失敗しました: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task RefreshClosureStateAsync()
+    {
+        if (_closureMonth is < 1 or > 12)
+        {
+            Snackbar.Add("月は1〜12で指定してください", Severity.Warning);
+            return;
+        }
+
+        _isClosed = await MonthlyClosureService.IsClosedAsync(_closureYear, _closureMonth);
+    }
+
+    private async Task ToggleMonthClosureAsync()
+    {
+        try
+        {
+            await MonthlyClosureService.SetClosedAsync(_closureYear, _closureMonth, !_isClosed);
+            _isClosed = !_isClosed;
+            var label = _isClosed ? "締めました" : "締め解除しました";
+            Snackbar.Add($"{_closureYear}/{_closureMonth:D2} を{label}", _isClosed ? Severity.Warning : Severity.Success);
+            await LoadClosedMonthsAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"月締め更新に失敗しました: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadClosedMonthsAsync()
+    {
+        _closedMonths = await MonthlyClosureService.GetAllAsync();
     }
 }

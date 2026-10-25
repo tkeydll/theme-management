@@ -233,6 +233,29 @@ namespace ThemeManagement.Migrations
                     b.ToTable("MonthlyWorkDays");
                 });
 
+            modelBuilder.Entity("ThemeManagement.Domain.Entities.MonthlyClosure", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("ClosedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Month")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Year")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Year", "Month")
+                        .IsUnique();
+
+                    b.ToTable("MonthlyClosures");
+                });
+
             modelBuilder.Entity("ThemeManagement.Domain.Entities.NotificationSetting", b =>
                 {
                     b.Property<int>("Id")

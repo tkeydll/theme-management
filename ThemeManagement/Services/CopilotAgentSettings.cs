@@ -4,64 +4,72 @@ namespace ThemeManagement.Services;
 
 public interface ICopilotAgentSettings
 {
-    string Model { get; set; }
+    string Provider { get; }
+    string Model { get; }
     string[] AvailableModels { get; }
+    string? CustomSystemPrompt { get; }
+    void Update(string provider, string model, string? systemPrompt);
 }
 
 public class CopilotAgentSettings : ICopilotAgentSettings
 {
     private const string FileName = "copilot-agent-settings.json";
     private readonly string _filePath;
-    private string _model = "claude-sonnet-4.6";
+    private string _provider = "AzureOpenAI";
+    private string _model = "gpt-5-mini";
+    private string? _systemPrompt;
 
     public string[] AvailableModels { get; }
 
     public CopilotAgentSettings(IWebHostEnvironment env, IConfiguration configuration)
     {
         _filePath = Path.Combine(env.ContentRootPath, FileName);
-        // appsettings.json の値をデフォルトとして使う
+        _provider = configuration["CopilotAgent:Provider"] ?? _provider;
         _model = configuration["CopilotAgent:Model"] ?? _model;
         AvailableModels = configuration.GetSection("CopilotAgent:AvailableModels").Get<string[]>()
-            ?? ["claude-sonnet-4.6", "claude-sonnet-4-5", "gpt-4.1", "gpt-4o", "o3-mini"];
+            ?? ["gpt-5-mini"];
         Load();
     }
 
-    public string Model
+    public string Provider => _provider;
+    public string Model => _model;
+    public string? CustomSystemPrompt => _systemPrompt;
+
+    public void Update(string provider, string model, string? systemPrompt)
     {
-        get => _model;
-        set
-        {
-            _model = value;
-            Save();
-        }
+        if (provider is not ("AzureOpenAI" or "CopilotSdk"))
+            throw new ArgumentException("未対応のエージェントプロバイダーです", nameof(provider));
+        if (string.IsNullOrWhiteSpace(model))
+            throw new ArgumentException("モデル名を入力してください", nameof(model));
+
+        var prompt = string.IsNullOrWhiteSpace(systemPrompt) ? null : systemPrompt.Trim();
+        var settings = new SettingsData { Provider = provider, Model = model.Trim(), SystemPrompt = prompt };
+        var json = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(_filePath, json);
+        _provider = settings.Provider;
+        _model = settings.Model;
+        _systemPrompt = settings.SystemPrompt;
     }
 
     private void Load()
     {
-        try
-        {
-            if (!File.Exists(_filePath)) return;
-            var json = File.ReadAllText(_filePath);
-            var obj = JsonSerializer.Deserialize<SettingsData>(json);
-            if (obj != null && !string.IsNullOrWhiteSpace(obj.Model))
-                _model = obj.Model;
-        }
-        catch { /* デフォルト値を使用 */ }
-    }
+        if (!File.Exists(_filePath)) return;
 
-    private void Save()
-    {
-        try
-        {
-            var json = JsonSerializer.Serialize(new SettingsData { Model = _model },
-                new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(_filePath, json);
-        }
-        catch { /* 保存失敗は無視 */ }
+        var json = File.ReadAllText(_filePath);
+        var settings = JsonSerializer.Deserialize<SettingsData>(json)
+            ?? throw new InvalidDataException($"設定ファイルを読み込めません: {_filePath}");
+        if (!string.IsNullOrWhiteSpace(settings.Provider))
+            _provider = settings.Provider;
+        if (!string.IsNullOrWhiteSpace(settings.Model))
+            _model = settings.Model;
+        if (!string.IsNullOrWhiteSpace(settings.SystemPrompt))
+            _systemPrompt = settings.SystemPrompt;
     }
 
     private record SettingsData
     {
-        public string Model { get; init; } = "claude-sonnet-4.6";
+        public string Provider { get; init; } = "AzureOpenAI";
+        public string Model { get; init; } = "gpt-5-mini";
+        public string? SystemPrompt { get; init; }
     }
 }

@@ -20,6 +20,7 @@ public class AppDbContext : DbContext
     public DbSet<Skill> Skills => Set<Skill>();
     public DbSet<EngineerSkill> EngineerSkills => Set<EngineerSkill>();
     public DbSet<ThemeRequiredSkill> ThemeRequiredSkills => Set<ThemeRequiredSkill>();
+    public DbSet<MonthlyClosure> MonthlyClosures => Set<MonthlyClosure>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -43,6 +44,9 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<ThemeRequiredSkill>()
             .HasIndex(e => new { e.ThemeId, e.SkillId }).IsUnique();
+
+        modelBuilder.Entity<MonthlyClosure>()
+            .HasIndex(e => new { e.Year, e.Month }).IsUnique();
 
         modelBuilder.Entity<EngineerSkill>()
             .Property(e => e.Level)
