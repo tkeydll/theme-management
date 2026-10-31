@@ -26,8 +26,10 @@
             <MudSelectItem T="bool" Value="true">上期 (4〜9月)</MudSelectItem>
             <MudSelectItem T="bool" Value="false">下期 (10〜3月)</MudSelectItem>
         </MudSelect>
-        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="LoadData"
-                   StartIcon="@Icons.Material.Filled.Refresh">読み込み</MudButton>
+        <MudTooltip Text="再読み込み">
+            <MudIconButton Icon="@Icons.Material.Filled.Refresh" OnClick="LoadData" />
+        </MudTooltip>
+        <MudCheckBox T="bool" @bind-Value="_showInactive" Label="完了・中止・失注も表示" />
         @if (_loading)
         {
             <MudProgressCircular Size="Size.Small" Indeterminate="true" />
@@ -62,7 +64,7 @@
                 <MudIcon Icon="@Icons.Material.Filled.Engineering" Class="mr-1" />
                 エンジニアビュー
             </MudText>
-            <div style="overflow-x:auto;">
+            <div class="forecast-scroll">
                 <table class="forecast-table">
                     <thead>
                         <tr>
@@ -174,7 +176,7 @@
                     }
                 </MudSelect>
             </MudStack>
-            <div style="overflow-x:auto;">
+            <div class="forecast-scroll">
                 <table class="forecast-table">
                     <thead>
                         <tr>
@@ -312,6 +314,7 @@
     private bool _isFirstHalf = GetDefaultIsFirstHalf();
     private bool _loaded = false;
     private bool _loading = false;
+    private bool _showInactive = false;
 
     private List<Engineer> _engineers = new();
     private List<Theme> _themes = new();
@@ -358,9 +361,12 @@
     {
         get
         {
-            var src = _selectedTags.Count == 0
+            var baseThemes = _showInactive
                 ? _themes
-                : _themes.Where(t => _selectedTags.All(tag => t.GetTagList().Contains(tag)));
+                : _themes.Where(t => ThemeStatus.ActiveStatuses.Contains(t.Status)).ToList();
+            var src = _selectedTags.Count == 0
+                ? baseThemes
+                : baseThemes.Where(t => _selectedTags.All(tag => t.GetTagList().Contains(tag)));
             return _sortKey switch
             {
                 "Name"                    => _sortAscending ? src.OrderBy(t => t.Name)                    : src.OrderByDescending(t => t.Name),
