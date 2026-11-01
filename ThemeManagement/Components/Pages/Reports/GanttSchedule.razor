@@ -11,11 +11,9 @@
 
 <MudPaper Class="pa-3 mb-4" Elevation="1">
     <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3">
-        <MudNumericField T="int" @bind-Value="_displayYear" Label="基準年" Min="2020" Max="2099" Style="width:100px" />
-        <MudNumericField T="int" @bind-Value="_displayMonths" Label="表示月数" Min="3" Max="24" Style="width:100px" />
-        <MudCheckBox T="bool" @bind-Value="_showAll" Label="完了・中止も含める" />
-        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
-                   OnClick="LoadDataAsync">更新</MudButton>
+        <MudNumericField T="int" @bind-Value="_displayYear" @bind-Value:after="LoadDataAsync" Label="基準年" Min="2020" Max="2099" Style="width:100px" />
+        <MudNumericField T="int" @bind-Value="_displayMonths" @bind-Value:after="LoadDataAsync" Label="表示月数" Min="3" Max="24" Style="width:100px" />
+        <MudCheckBox T="bool" @bind-Value="_showAll" @bind-Value:after="LoadDataAsync" Label="完了・中止も含める" />
     </MudStack>
 </MudPaper>
 

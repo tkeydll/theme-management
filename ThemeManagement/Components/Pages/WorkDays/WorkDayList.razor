@@ -13,13 +13,12 @@
 
 <MudPaper Class="pa-4 mb-4" Elevation="1">
     <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3" Wrap="Wrap.Wrap">
-        <MudNumericField T="int" @bind-Value="_year" Label="年" Min="2020" Max="2100" Style="width:100px" />
-        <MudToggleGroup T="int" @bind-Value="_half" SelectionMode="SelectionMode.SingleSelection"
+        <MudNumericField T="int" @bind-Value="_year" @bind-Value:after="LoadAsync" Label="年" Min="2020" Max="2100" Style="width:100px" />
+        <MudToggleGroup T="int" @bind-Value="_half" @bind-Value:after="LoadAsync" SelectionMode="SelectionMode.SingleSelection"
                         Color="Color.Primary" CheckMark="false">
             <MudToggleItem Value="1" Text="上期（4〜9月）" />
             <MudToggleItem Value="2" Text="下期（10〜3月）" />
         </MudToggleGroup>
-        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="LoadAsync">表示</MudButton>
         <MudButton Variant="Variant.Outlined" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.AutoAwesome"
                    OnClick="AutoFillBusinessDaysAsync">祝休日除き自動計算</MudButton>
         <MudDivider Vertical="true" Class="mx-2" />

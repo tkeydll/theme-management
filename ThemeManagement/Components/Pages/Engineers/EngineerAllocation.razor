@@ -25,9 +25,8 @@ else
 
     <MudPaper Class="pa-4 mb-4" Elevation="1">
         <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3">
-            <MudNumericField T="int" @bind-Value="_year" Label="年" Min="2020" Max="2100" Style="width:100px" />
-            <MudNumericField T="int" @bind-Value="_month" Label="月" Min="1" Max="12" Style="width:80px" />
-            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="LoadAllocations">更新</MudButton>
+            <MudNumericField T="int" @bind-Value="_year" @bind-Value:after="LoadAllocations" Label="年" Min="2020" Max="2100" Style="width:100px" />
+            <MudNumericField T="int" @bind-Value="_month" @bind-Value:after="LoadAllocations" Label="月" Min="1" Max="12" Style="width:80px" />
         </MudStack>
         <MudDivider Class="my-3" />
         <MudStack Row="true" Spacing="4">

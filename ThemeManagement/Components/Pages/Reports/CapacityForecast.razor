@@ -12,11 +12,9 @@
 
 <MudPaper Class="pa-3 mb-4" Elevation="1">
     <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3">
-        <MudNumericField T="int" @bind-Value="_startYear" Label="開始年" Min="2020" Max="2099" Style="width:100px" />
-        <MudNumericField T="int" @bind-Value="_startMonth" Label="開始月" Min="1" Max="12" Style="width:80px" />
-        <MudNumericField T="int" @bind-Value="_months" Label="表示月数" Min="1" Max="12" Style="width:100px" />
-        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
-                   OnClick="LoadDataAsync">更新</MudButton>
+        <MudNumericField T="int" @bind-Value="_startYear" @bind-Value:after="LoadDataAsync" Label="開始年" Min="2020" Max="2099" Style="width:100px" />
+        <MudNumericField T="int" @bind-Value="_startMonth" @bind-Value:after="LoadDataAsync" Label="開始月" Min="1" Max="12" Style="width:80px" />
+        <MudNumericField T="int" @bind-Value="_months" @bind-Value:after="LoadDataAsync" Label="表示月数" Min="1" Max="12" Style="width:100px" />
     </MudStack>
 </MudPaper>
 

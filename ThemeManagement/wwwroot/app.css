@@ -16,6 +16,23 @@ html, body {
     overflow: hidden;
 }
 
+.forecast-scroll {
+    overflow: auto;
+    max-height: calc(100vh - 220px);
+}
+
+.forecast-scroll .forecast-table td:first-child {
+    position: sticky;
+    left: 0;
+    background: #fff;
+    z-index: 1;
+}
+
+.forecast-scroll .forecast-table th:first-child {
+    left: 0;
+    z-index: 2;
+}
+
 .forecast-table {
     border-collapse: collapse;
     white-space: nowrap;
